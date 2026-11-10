@@ -1,0 +1,709 @@
+# 企业评估交互端全栈方案设计
+
+## 一、方案总览与设计原则
+
+### 1.1 方案定位
+
+本方案面向投资、求职、企业合作、创业尽调四类场景，设计一套以**证据优先、多视角适配、AI增强、可审计**为核心特征的企业评估交互端。系统不替代使用者的判断，而是将分散的公开数据、专业分析方法和AI推理能力组织为一个结构化、可追溯、可复用的评估工作台。
+
+### 1.2 核心设计原则
+
+**原则一：证据优先，结论可追溯。** 每一条评估结论必须挂载证据来源，标注置信度。AI摘要或结论本身不是证据，底层源材料必须被保留并可复现。
+
+**原则二：视角可切换，数据可复用。** 同一套底层企业数据，通过视角适配层映射为投资、求职、合作、创始人四种评估语义，各视角拥有独立的评分权重和风险阈值。
+
+**原则三：AI增强而非替代。** AI层提供检索、推理、辩论、验证和生成能力，但评分引擎和风险策略引擎仍保留规则化的兜底逻辑。当AI不可用或置信度不足时，系统降级到规则引擎输出。
+
+**原则四：模块自治，事件驱动。** 前端各业务模块独立开发、独立部署，通过事件总线和共享状态进行跨模块协作，避免模块间的直接耦合。
+
+**原则五：合规内建，审计可复现。** 所有AI参与的分析过程记录完整的事件日志，包括输入数据版本、模型版本、提示词版本、工具调用记录和人工干预记录。这不仅是技术需求，更是合规要求——在投研报告、招股披露、尽调报告等场景中，AI输出必须纳入可识别、可复核、可追溯、可下线、可举证的合规闭环。
+
+
+## 二、参考来源与架构依据
+
+本方案的设计综合参考了以下成熟项目和学术成果：
+
+| 参考项目 | 核心借鉴 |
+|---|---|
+| **AlphaInsight**（GitHub） | LangGraph非线性尽调工作流、规划Agent拆解检索意图树、风控做空Agent的对抗辩论机制、引用至PDF段落的精准溯源 |
+| **Atlas**（GitHub） | Supervisor-并行专家-辩论-Synthesizer的四阶段编排、Agentic Hybrid RAG（BM25+Dense+RRF+Cross-encoder+CRAG）、自改进LLM-Ops循环、四层记忆架构 |
+| **AG2 + TinyFish Due Diligence** | 种子爬取→6并行专家→验证器→综合报告的4阶段流水线 |
+| **Wallstreet Tieling**（GitHub） | 证据链留痕、置信度分层（Documented/Discovered/Inferred/Missing）、来源路由→证据台账→关系图谱→资本风险面板→报告导出的流水线架构 |
+| **Sieve MCP** | IMPACT-X七维评估框架、每条发现标记为Documented/Discovered/Inferred/Missing、跨引用核验机制 |
+| **AG-UI协议** | 事件驱动的Agent到前端通信协议、标准化的生命周期事件类型（RUN_STARTED、STEP_STARTED、TEXT_MESSAGE_CONTENT等）、SSE/WebSocket传输 |
+| **CopilotKit** | React前端的Agent UI运行时、useCopilotReadable/useCopilotAction模式实现前端工具与Agent的双向同步、 |
+| **@palinc/nirnam** | 基于SharedWorker + BroadcastChannel的三层混合消息总线、Pub/Sub + Request/Reply + Streaming三种消息模式 |
+| **Feature-Sliced Design** | 前端分层方法论（展示层→业务层→数据访问层） |
+| **Ragas框架** | RAG系统的忠实度（Faithfulness）、答案相关性、上下文召回与精确度评估指标 |
+
+**合规参考依据**：在投研报告、招股披露、尽调报告等场景中，AI输出已被纳入可识别、可复核、可追溯、可下线、可举证的合规闭环要求。首例AI幻觉侵权案明确了过错责任而非严格责任，服务提供者责任审查围绕是否尽到动态注意义务展开。在信用承销、管理人筛选、交易对手尽调等场景中，每一项发现必须追溯到可追溯的数据点。AI摘要或结论本身不是证据，组织必须保留并能提供发现所依据的底层源材料。
+
+
+## 三、总体架构
+
+采用**五层架构**：
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        交互层 (Presentation Layer)                │
+│  Shell │ 多视角切换 │ AI Copilot │ Agent作战室 │ 证据链查看器    │
+│  报告阅读器 │ 估值工作台 │ 关系图谱 │ 对比分析面板                │
+├──────────────────────────────────────────────────────────────────┤
+│                        业务层 (Business Layer)                     │
+│  评估编排器 │ 视角适配器 │ 评分引擎 │ 风险策略引擎 │ 报告合成     │
+│  权重配置器 │ 任务调度器 │ 阻塞门控制器                           │
+├──────────────────────────────────────────────────────────────────┤
+│                    ★ AI赋能层 (AI Enablement Layer)               │
+│  多Agent编排器(LangGraph) │ AI Gateway │ 混合RAG │ 验证器         │
+│  LLM-Ops闭环 │ 提示词注册表 │ 记忆系统 │ MCP工具服务              │
+├──────────────────────────────────────────────────────────────────┤
+│                       数据接入层 (Data Access Layer)               │
+│  企业数据源适配器 │ 缓存管理 │ 状态管理 │ BFF/API Gateway Client  │
+│  实时推送(SSE/WS) │ 证据持久化                                    │
+├──────────────────────────────────────────────────────────────────┤
+│                    后端服务 (Backend Services)                     │
+│  微服务 │ 消息队列 │ 图数据库 │ 向量数据库 │ 关系数据库           │
+│  文件存储 │ 审计日志 │ 任务队列                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+
+## 四、交互层详细设计
+
+### 4.1 壳层模块（Shell）
+
+壳层是整个交互端的宿主容器，负责认证、全局布局、路由分发和跨模块通信总线。
+
+| 子模块 | 职责 |
+|---|---|
+| **App Shell** | 全局布局、顶栏/侧边栏、主题切换、用户会话管理 |
+| **Auth Guard** | 登录态拦截、权限路由过滤、Token刷新 |
+| **Route Orchestrator** | 按URL路径动态加载远程模块（Module Federation远程入口），支持独立部署和按需加载 |
+| **Event Bus** | 跨模块事件发布/订阅中枢。参考@palinc/nirnam的三层混合消息总线设计，基于SharedWorker + BroadcastChannel实现，支持Pub/Sub、Request/Reply和Streaming三种消息模式。选用该方案的理由在于其零运行时依赖、可跨iframe和Module Federation远程模块工作。|
+| **Shared State Store** | 全局共享状态（当前评估主体ID、当前视角、用户偏好权重），基于Zustand创建单一store实例，通过Module Federation的shared依赖暴露给所有远程模块 |
+
+**状态分层策略**。参考微前端状态管理的实践经验，将状态划分为三层：全局共享层（用户身份、当前评估主体、当前视角）、跨应用协作层（分析流水线状态、Agent运行状态）、局部私有层（各模块内的表单状态、UI交互态）。跨模块状态通过Shared Store协调，非状态性的通知通过Event Bus传递。
+
+### 4.2 多视角切换模块
+
+这是整个交互端的入口级模块。四个视角对应四套评估语义：
+
+| 视角 | 核心问题 | 关键评估维度 | 评分权重侧重点 |
+|---|---|---|---|
+| **投资视角** | 这是一笔好投资吗？ | 市场规模、单位经济学、增长轨迹、团队质量、护城河、退出路径 | 增长性>盈利性>风险 |
+| **求职视角** | 我应该在这里工作吗？ | 股权价值、跑道风险、文化信号、职业成长、薪酬公平性 | 稳定性>成长性>文化 |
+| **合作视角** | 这家公司值得合作吗？ | 交付能力、财务健康度、合规记录、供应链稳定性、信誉评级 | 合规性>交付能力>财务 |
+| **创始人视角** | 公司健康度如何？ | PMF验证度、燃烧效率、竞争壁垒、组织健康度 | 均衡评估 |
+
+每个视角对应独立的评分权重配置。切换视角时，前端仅替换评估卡片的内容和排序，底层数据（证据集、Agent分析结果）复用，避免重复分析。
+
+### 4.3 证据链查看器
+
+证据链查看器是区分专业级评估工具与普通信息聚合工具的核心模块。每条评估结论必须挂载证据来源，标注置信度标签。
+
+**证据类型分层**。参考Sieve的IMPACT-X框架和Wallstreet Tieling的证据链设计，每条发现标记为以下四类之一：
+
+| 证据类型 | 含义 | 前端展示 |
+|---|---|---|
+| **Documented** | 有文档直接支撑（财报、工商API、SEC Filing） | 绿色标签 + 来源链接 |
+| **Discovered** | 从数据中发现（从招聘趋势反推增长、从专利数量推断研发投入） | 蓝色标签 + 推断逻辑说明 |
+| **Inferred** | 推断得出（AI推理结果，需人工确认） | 黄色标签 + 推理链摘要 |
+| **Missing** | 数据缺失（该维度无可用证据） | 灰色标签 + 建议核验方向 |
+
+**来源可信度权重**。不同来源的可信度权重不同，在评分和置信度计算中予以区分：
+
+| 层级 | 来源类型 | 可信度权重 | 示例 |
+|---|---|---|---|
+| L1 | 一手数据 | 1.0 | 工商API、财报原件、SEC Filing、司法裁判文书 |
+| L2 | 二手数据 | 0.7 | 新闻、Crunchbase、行业研究报告 |
+| L3 | 推断数据 | 0.4 | 从招聘趋势反推增长、从专利数量推断研发投入 |
+| L4 | 网络搜索 | 0.5 | Tavily实时搜索结果（需交叉验证） |
+
+**交叉验证标记**。当多个独立来源指向同一结论时，自动标注“已交叉验证”及来源数量。当不同来源对同一指标的数据冲突时，标记为“矛盾数据”并触发阻塞门检查。
+
+### 4.4 AI Copilot面板
+
+采用“任务为中心 + 对话为辅助”的混合界面范式。参考CopilotKit的模式，Chat不应该是主界面，而应该作为结构化工作台的辅助控制手段。对于需要结构化数据录入、并排对比、精确控制的评估场景，纯聊天界面效率低下。CopilotKit作为前端运行时，通过AG-UI协议与后端Agent保持实时同步。
+
+**核心实现模式**：
+
+```typescript
+// 向Agent暴露当前评估上下文
+useCopilotReadable({
+  description: "当前评估的主体信息",
+  value: { entityId, entityName, perspective, activeAgents }
+})
+
+// 注册前端可执行动作
+useCopilotAction({
+  name: "switchPerspective",
+  description: "切换评估视角",
+  parameters: [{ name: "perspective", type: "string", 
+                 enum: ["invest", "job", "partner", "founder"] }],
+  handler: async ({ perspective }) => {
+    globalStore.setPerspective(perspective)
+    eventBus.publish('PERSPECTIVE_CHANGED', { perspective })
+  }
+})
+
+useCopilotAction({
+  name: "focusEvidence",
+  description: "在证据链中高亮指定证据",
+  parameters: [{ name: "evidenceId", type: "string" }],
+  handler: async ({ evidenceId }) => {
+    eventBus.publish('EVIDENCE_FOCUS_REQUESTED', { evidenceId })
+  }
+})
+```
+
+Copilot面板与主工作区实时联动：用户在Chat中说“帮我看看这家公司的供应商集中风险”，Copilot调用`focusEvidence`或直接触发合规Agent重新分析该维度，结果反映在主工作区的证据链面板中。
+
+### 4.5 Agent作战室（War Room）
+
+将多Agent的运行状态以可视化形式呈现，参考Atlas的war-room UI设计：
+
+- **Agent拓扑图**：显示当前活跃的Agent及其连接关系（规划→检索/财务/合规→辩论→验证→合成）
+- **辩论时间线**：以对话气泡形式展示Bull和Bear Agent的逐轮辩论内容
+- **证据流入流**：实时显示检索Agent找到的新证据片段及其来源
+- **置信度热力图**：各评估维度的置信度色阶，直观识别薄弱环节
+
+该面板通过AG-UI事件流驱动，订阅AgentSpawned、AgentProgress、AgentDebate、AgentResult等事件类型。
+
+### 4.6 流式报告阅读器
+
+报告不是一次性生成后展示，而是**流式生成 + 增量渲染**。前端通过SSE接收报告章节，逐段渲染，用户可以在报告生成过程中就开始阅读已完成的章节。
+
+参考Vercel AI SDK的streaming模式，报告生成分解为：
+
+```
+执行摘要 → 主体画像 → 维度1分析 → 维度2分析 → ... → 证据台账 → 红旗清单 → 后续核验建议
+```
+
+每个章节生成完毕即推送到前端。Vercel AI SDK的`createUIMessageStream`支持将AI响应流与自定义数据流合并，同时发送推理过程和结构化数据。
+
+### 4.7 报告导出模块
+
+支持多格式输出：Markdown（快速阅读）、HTML（交互式查看，含关系图谱和风险面板）、PDF（归档交付）、DOCX（编辑修改）。报告结构采用固定模板，确保审计一致性。
+
+### 4.8 场景专属模块
+
+**投资视角专属——估值工作台**：DCF/相对估值/VC法参数调节，可比公司面板，实时估值区间重算。前端支持财务参数的交互式调整。
+
+**求职视角专属——文化信号与薪酬模块**：Glassdoor/脉脉数据聚合，薪酬对比条，股权计算器（行权价/估值/流动性折价），离职风险预警（裁员历史/融资阶段/烧钱率）。
+
+**合作视角专属——合规与交付能力模块**：资质验证面板，供应链依赖度分析，历史合作纠纷检索。
+
+**创业尽调专属——数据室分析入口**：上传/关联数据室文档，创始人画像卡，技术栈深度分析，知识产权扫描，竞品格局矩阵。
+
+
+## 五、业务层详细设计
+
+### 5.1 评估编排器
+
+负责协调前端交互与后端AI分析流水线。编排器管理以下状态流：
+
+```
+用户输入主体标识 → 种子信息抓取 → 并行专家分析 → 验证与交叉核对 → 报告合成 → 交互式追问
+```
+
+前端需要向编排器传递：目标主体标识、评估视角（可多选）、评估深度（快速扫描/标准尽调/深度调查）、关注的特定维度。
+
+编排器支持用户在中途**中断和修正**Agent方向。参考LangGraph的human-in-the-loop机制，在关键节点（如API调用、辩论阶段）暂停图执行，向用户呈现当前状态和决策建议，用户确认后恢复执行。LangGraph的interrupt函数在特定节点暂停图，向人类呈现信息，并根据其输入恢复图执行。
+
+### 5.2 视角适配器
+
+将同一套底层数据映射为不同视角下的评估语义。适配器维护视角-维度映射表和权重配置，支持用户自定义权重。
+
+**映射示例**——“员工人数年增长30%”这一数据：
+
+- 投资视角 → “团队扩张速度健康，反映业务增长”
+- 求职视角 → “招聘活跃，但需关注是否带来管理稀释”
+- 合作视角 → “产能可能正在扩张，交付能力在提升”
+- 创始人视角 → “组织扩张速度需与收入增长匹配”
+
+### 5.3 评分引擎
+
+评分引擎接收视角适配器输出的维度映射和权重配置，结合AI层Verifier Agent输出的验证后证据集，生成每个维度的评分。每个维度的评分输出包含：分数值 + 置信度 + 数据覆盖率 + 关键证据引用。
+
+### 5.4 风险策略引擎与阻塞门
+
+参考Due Diligence Agents的5个阻塞门设计，在评估流程中设置强制核验节点：
+
+- **门1**：主体身份确认——工商注册信息核验
+- **门2**：关键数据源可达性检查——所有必需的数据源是否可正常访问
+- **门3**：矛盾数据标记——发现同一指标的多源冲突时触发
+- **门4**：最低置信度阈值检查——低于阈值的结论不得进入最终报告
+- **门5**：合规与制裁名单筛查——确保主体不在制裁名单中
+
+阻塞门触发时，系统不输出结论性评分，仅提供证据摘要和建议核验方向。
+
+
+## 六、AI赋能层详细设计
+
+### 6.1 多Agent分析引擎
+
+参考AlphaInsight的非线性LangGraph工作流和Atlas的“Supervisor→并行专家→辩论→Synthesizer”编排模式，设计以下Agent拓扑：
+
+```
+                    ┌──────────────┐
+                    │  规划Agent    │ 拆解评估指令为检索意图树
+                    │ (Planning)   │ 生成宏观/财务/合规三维度任务
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+     ┌────────────┐ ┌────────────┐ ┌────────────┐
+     │ 情报检索    │ │ 财务分析    │ │ 合规风险    │
+     │ Agent      │ │ Agent      │ │ Agent      │
+     │ 并发调用    │ │ 杜邦分析    │ │ 制裁名单    │
+     │ SEC/新闻/RAG│ │ 长链推理    │ │ 诉讼/知产   │
+     └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
+           │              │              │
+           ▼              ▼              ▼
+     ┌──────────────────────────────────────────┐
+     │          对抗性辩论层                      │
+     │  ┌──────────┐      ┌──────────┐          │
+     │  │ 看多Agent │ ←→  │ 做空Agent │  3-5轮   │
+     │  │ (Bull)   │ 辩论  │ (Bear)   │  对抗     │
+     │  └──────────┘      └──────────┘          │
+     └──────────────────┬───────────────────────┘
+                        ▼
+              ┌──────────────────┐
+              │  验证器 Agent     │ 交叉核对证据
+              │  (Verifier)      │ 标记矛盾/缺失
+              └────────┬─────────┘
+                       ▼
+              ┌──────────────────┐
+              │  主笔 Agent       │ 汇总共识与分歧
+              │  (Synthesizer)   │ 生成结构化报告
+              └──────────────────┘
+```
+
+AlphaInsight的核心创新在于风控做空Agent拥有独立的System Prompt，专门扮演“挑刺者”角色，与财务分析Agent展开多轮辩论（例如质疑营收增长下的供应商集中与存货周转矛盾），迫使系统反思。Atlas项目则将这一模式扩展为Bull ⇄ Bear辩论，配合Synthesizer + Judge合并双方观点，生成带引用和置信度分数的报告。
+
+### 6.2 Agent接口契约
+
+每个Agent暴露统一的接口契约：
+
+```typescript
+interface AgentContract {
+  agentId: string
+  agentType: 'planning' | 'retrieval' | 'financial' 
+           | 'compliance' | 'bull' | 'bear' 
+           | 'verifier' | 'synthesizer'
+  status: 'spawned' | 'running' | 'debating' 
+        | 'completed' | 'error'
+  
+  input: {
+    entityId: string
+    perspective: Perspective
+    context: AgentContext    // 上游Agent的输出摘要
+    evidence?: EvidenceChunk[]
+  }
+  
+  output: {
+    findings: Finding[]      // 结构化发现
+    evidenceRefs: string[]   // 证据引用ID
+    confidence: number       // 0-1 置信度
+    flags: Flag[]            // 红旗/异常标记
+    reasoning: string        // 推理链摘要
+  }
+}
+
+interface Finding {
+  dimension: string          // 评估维度
+  statement: string          // 结论陈述
+  evidenceType: 'Documented' | 'Discovered' 
+              | 'Inferred' | 'Missing'
+  sourceRefs: SourceRef[]
+  strength: 'strong' | 'moderate' | 'weak'
+}
+```
+
+### 6.3 Agent编排协议
+
+参考Google Cloud的Targeted Assessment Agent框架，采用**Coding-Extraction-Synthesis**三阶段方法论：
+
+**阶段一：演绎编码**。Agent对语料中的每份文档并行分析，按预定义评分标准进行“编码”，同时标注可信度、偏见和时效性，创建结构化的“文档为何重要”的映射。
+
+**阶段二：证据提取**。基于阶段一生成的元数据，Agent重新访问特定的文档-标准对，提取逐字证据片段及其含义注解。
+
+**阶段三：发现合成**。Agent聚合所有提取的证据来回答核心评估问题。由于处理了完整语料而非过滤后的子集，可以合成覆盖全部证据的发现。
+
+### 6.4 AI Gateway
+
+AI Gateway是前端与AI能力之间的唯一入口，参考DoorDash的企业级GenAI平台架构——通过Agent Gateway统一暴露工具和Agent能力，支持MCP和其他Agent协议，集成安全钩子、可观测性和访问控制。
+
+| 接口 | 方法 | 说明 | 传输方式 |
+|---|---|---|---|
+| `/api/ai/analyze` | POST | 启动多Agent分析流水线 | REST + SSE |
+| `/api/ai/analyze/{runId}/events` | GET | 订阅分析进度事件流 | SSE |
+| `/api/ai/analyze/{runId}/interrupt` | POST | 用户中断/修正Agent方向 | WebSocket |
+| `/api/ai/chat` | POST | 对话式追问（基于当前评估上下文） | SSE |
+| `/api/ai/evidence/search` | POST | 语义检索证据库 | REST |
+| `/api/ai/report/generate` | POST | 生成结构化报告 | REST + SSE |
+| `/api/ai/report/{id}/stream` | GET | 流式读取报告生成过程 | SSE |
+| `/api/ai/score` | POST | AI辅助评分 | REST |
+| `/api/ai/verify` | POST | 证据交叉验证 | REST |
+
+### 6.5 传输策略
+
+**模式一：Direct SSE**。适用于单向流式输出（报告生成、Agent进度推送）。客户端通过EventSource或fetch + ReadableStream接收。
+
+**模式二：Background/Resumable SSE**。适用于长时任务（深度尽调分析可能耗时数分钟）。后端先创建Job并返回runId，客户端通过runId重连事件流，支持断线续传。
+
+**模式三：WebSocket双向通道**。适用于需要用户实时干预的场景（中断Agent、修正检索方向、在辩论中插入新证据）。
+
+### 6.6 Agent生命周期事件协议
+
+参考AG-UI协议的标准事件Schema，覆盖Agent完整生命周期。AG-UI使用流式事件驱动架构，事件是Agent后端到前端UI的通信单元，每个协议事件派生自BaseEvent并具有类型判别符。
+
+```typescript
+type AgentEvent =
+  | { type: 'RUN_STARTED';     threadId: string; runId: string }
+  | { type: 'STEP_STARTED';    agentId: string; stepName: string }
+  | { type: 'TEXT_MESSAGE_CONTENT'; agentId: string; content: string }
+  | { type: 'TOOL_CALL_START'; agentId: string; toolName: string }
+  | { type: 'TOOL_CALL_RESULT'; agentId: string; result: unknown }
+  | { type: 'STATE_SNAPSHOT';  state: Record<string, unknown> }
+  | { type: 'STATE_DELTA';     delta: Record<string, unknown> }
+  | { type: 'REASONING_MESSAGE_CONTENT'; agentId: string; content: string }
+  | { type: 'RUN_ERROR';       error: string; recoverable: boolean }
+  | { type: 'RUN_FINISHED';    runId: string; output: AgentOutput }
+```
+
+AG-UI协议的设计目标是用标准事件类型让任何Agent后端都能发出、任何前端都能消费，避免每个框架各自发明流式格式。LangGraph深度Agent通过`@ag-ui/langgraph`适配器将图执行转换为类型化的AG-UI事件流，客户端订阅这些事件并实时更新，而非等待最终答案。
+
+事件推送频率采用分级节流：关键事件（RUN_STARTED、RUN_ERROR）立即推送；进度事件每500ms推送一次；心跳每1500ms一次。
+
+### 6.7 混合RAG检索
+
+参考Atlas的Agentic Hybrid RAG设计：
+
+```
+查询 → BM25 (关键词检索) ─┐
+      → Dense Embedding ──┼→ RRF 融合 → Cross-encoder 重排序 → CRAG 自纠正
+                         │
+                    (若证据不足，触发重新检索)
+```
+
+- **BM25**：处理精确术语匹配（如财务指标名称、法规条款编号）
+- **Dense Embedding**：处理语义相似检索（如“增长瓶颈”匹配“营收增速放缓”）
+- **RRF**：融合两路检索结果
+- **Cross-encoder重排序**：对候选片段进行精细相关性排序
+- **CRAG**：对检索结果进行三路评级（完全回答/部分回答/无法回答），决定是否触发Web搜索补充
+
+Atlas的CRAG自纠正循环在证据不足时触发重新搜索，Web结果成为与文档相同的可引用chunk类型，使得来源追踪在两种方式下保持一致。
+
+### 6.8 MCP工具集成
+
+AI层的工具调用通过MCP标准化。企业评估场景中的MCP工具清单：
+
+```
+mcp-server-enterprise-eval
+├── tool: search_company           # 企业搜索
+├── tool: get_financials           # 财务数据
+├── tool: get_legal_records        # 司法记录
+├── tool: get_shareholder_graph    # 股权穿透
+├── tool: get_ip_portfolio         # 知识产权
+├── tool: get_news_sentiment       # 新闻情绪
+├── tool: get_sanctions_list       # 制裁名单
+└── resource: evidence://{id}      # 证据资源访问
+```
+
+中国企业数据源方面，企查查MCP已覆盖179个原子能力，包括工商、司法、知产、经营、董监高等高频维度。启信慧眼数据调用服务支持一键调用超过200项数据接口，覆盖工商信息、司法风险、知识产权、经营数据等模块。工商云MCP服务提供覆盖工商注册、股东治理、经营动态、司法涉诉、税务风险、环保处罚、供应链上下游、资质认证及舆情监测等30+工具的结构化企业情报查询能力。
+
+### 6.9 AI辅助评分与验证
+
+**评分Agent**接收Verifier输出的验证后证据集，按照视角-维度权重映射表，生成每个维度的评分建议及置信区间。参考LLM-Based Multi-Agent Startup Evaluation的研究成果：检索增强的多Agent LLM框架将评估分解为财务、市场、技术和团队等专业角色，由Supervisor协调、Fact-checking Agent验证，在127家专家评估的初创公司上实现了23%的专家评分一致性提升，幻觉率降低67%，评估时间缩短78%。
+
+**Verifier Agent**的职责是对所有Agent产出的Finding进行交叉验证：
+
+- **来源交叉检查**：同一结论是否被≥2个独立来源支撑
+- **矛盾检测**：不同来源对同一指标的数据是否冲突
+- **时效性验证**：引用的数据是否超出合理时效窗口
+- **置信度重新校准**：基于验证结果调整Finding的置信度
+
+### 6.10 LLM-Ops评估闭环
+
+参考Atlas的自改进LLM-Ops循环，每次AI分析运行后自动评估：
+
+- **使用Ragas框架自动评估**：对生成的报告进行groundedness（是否基于检索证据）和richness（信息丰富度）评分。Ragas的Faithfulness指标衡量生成内容与检索上下文的事实一致性，在高风险金融场景建议阈值≥0.90。
+- **弱提示词诊断与迭代**：当某类查询的评估分数持续偏低时，自动诊断提示词并触发重写
+- **版本化提示词注册表**：所有Agent的System Prompt纳入版本管理，支持A/B测试和回滚
+- **Per-Agent评估**：每个专家Agent单独评分（groundedness + richness），以图表形式追踪性能变化
+
+### 6.11 记忆系统
+
+参考Atlas的四层记忆架构：
+
+| 记忆层 | 实现方式 | 用途 |
+|---|---|---|
+| **Working** | LangGraph图状态 | 当前分析任务的上下文 |
+| **Semantic** | RAG向量库 | 企业文档和证据的语义检索 |
+| **Episodic** | SQLite + 向量 | 历史评估运行的记录和结果 |
+| **Procedural** | Playbook | 评估流程和最佳实践 |
+
+Summarizer Agent负责将旧运行的记忆蒸馏为持久事实，减少重复分析。
+
+
+## 七、模块连接设计
+
+### 7.1 连接拓扑
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                        App Shell                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │ Auth     │  │ Route    │  │ Event    │  │ Shared   │     │
+│  │ Guard    │  │ Orchestr.│  │ Bus      │  │ State    │     │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘     │
+└───────┼──────────────┼──────────────┼──────────────┼──────────┘
+        │              │              │              │
+        ▼              ▼              ▼              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                  Module Federation Remote Entry               │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐    │
+│  │  M1    │ │  M2    │ │  M3    │ │  M4    │ │  M5    │    │
+│  │输入检索│ │视角切换│ │证据链  │ │评分风险│ │关系图谱│    │
+│  └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘    │
+│  ┌───┴────┐ ┌───┴────┐ ┌───┴────┐ ┌───┴────┐ ┌───┴────┐    │
+│  │  M6    │ │  M7    │ │  M8    │ │  M9    │ │  M10   │    │
+│  │报告导出│ │估值台  │ │薪酬文化│ │合规交付│ │AI Copilot│   │
+│  └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘    │
+│  ┌───┴────┐ ┌───┴────┐                                       │
+│  │  M11   │ │  M12   │                                       │
+│  │作战室  │ │流式报告│                                       │
+│  └───┬────┘ └───┬────┘                                       │
+└──────┼──────────┼────────────────────────────────────────────┘
+       │          │
+       ▼          ▼
+┌─────────────────────────────────────────────┐
+│           AI Gateway (统一AI接口层)           │
+│  /api/ai/analyze  /api/ai/chat  /api/ai/... │
+└──────────────────┬──────────────────────────┘
+                   │
+       ┌───────────┴───────────┐
+       ▼                       ▼
+┌──────────────┐    ┌──────────────────┐
+│  BFF / API   │    │  AI赋能层         │
+│  Gateway     │    │  多Agent编排器    │
+│  /api/entity │    │  RAG检索          │
+│  /api/graph  │    │  验证器           │
+│  /api/report │    │  LLM-Ops          │
+└──────┬───────┘    └────────┬─────────┘
+       │                     │
+       └──────────┬──────────┘
+                  ▼
+       ┌─────────────────────┐
+       │  后端微服务/数据源   │
+       │  MCP工具服务         │
+       │  图数据库/向量数据库 │
+       │  消息队列/任务队列   │
+       └─────────────────────┘
+```
+
+### 7.2 三种连接机制
+
+**机制一：事件驱动（Event Bus）——跨模块的解耦通知**
+
+适用于状态变更通知、生命周期事件。事件总线通过类型化通道实现，模块间不直接引用。参考@palinc/nirnam的消息总线设计，支持Pub/Sub、Request/Reply和Streaming三种模式，其中Streaming模式特别适合LLM token流和进度更新。
+
+| 事件名称 | 发布者 | 订阅者 | 载荷 |
+|---|---|---|---|
+| `ENTITY_SELECTED` | M1 | M3, M5, M6, M7 | `{ entityId, entityName, creditCode }` |
+| `PERSPECTIVE_CHANGED` | M2 | M4, M6, M7, M8, M9 | `{ perspective }` |
+| `ANALYSIS_STARTED` | Shell | M11, M12 | `{ runId, agents[] }` |
+| `AGENT_EVENT` | AI Gateway | M11 | `{ agentId, event: AgentEvent }` |
+| `ANALYSIS_COMPLETED` | AI Gateway | M3, M4, M12 | `{ entityId, scores, evidence[], riskGates }` |
+| `EVIDENCE_SELECTED` | M3 | M6 | `{ evidenceId, sourceUrl }` |
+| `EVIDENCE_FOCUS_REQUESTED` | M10 | M3 | `{ evidenceId }` |
+| `EXPORT_REQUESTED` | M6 | BFF | `{ entityId, format, perspective }` |
+| `INTERRUPT_REQUESTED` | M10/M11 | AI Gateway | `{ runId, agentId, instruction }` |
+
+**机制二：共享状态（Shared Store）——需要持久保持的全局状态**
+
+```typescript
+interface GlobalState {
+  currentEntityId: string | null
+  currentPerspective: 'invest' | 'job' | 'partner' | 'founder'
+  weights: Record<string, number>
+  activeAnalysisRunId: string | null
+  activeAgents: AgentStatus[]
+  setEntity: (id: string) => void
+  setPerspective: (p: string) => void
+  setWeights: (w: Record<string, number>) => void
+}
+```
+
+各模块通过`useGlobalStore` hook读取和更新状态，变更后自动触发订阅组件重渲染。
+
+**机制三：API网关/BFF——模块与后端的通信**
+
+前端不直接调用多个后端微服务，而是通过BFF聚合层将请求组合为模块所需的单一数据契约。
+
+```
+M1 (输入检索) → GET  /api/entity/search?q=xxx
+M3 (证据链)   → GET  /api/analysis/{id}/evidence?perspective=invest
+M4 (评分)     → GET  /api/analysis/{id}/scores?perspective=invest
+M5 (图谱)     → GET  /api/graph/{id}?depth=5&minRatio=0.05
+M6 (导出)     → POST /api/report/export { entityId, format, perspective }
+M7 (估值)     → POST /api/valuation/calculate { entityId, params }
+M10 (Copilot) → POST /api/ai/chat { message, context }
+M11 (作战室)  → GET  /api/ai/analyze/{runId}/events (SSE)
+M12 (流式报告)→ GET  /api/ai/report/{id}/stream (SSE)
+```
+
+### 7.3 模块依赖矩阵
+
+| 模块 | 依赖的全局状态 | 订阅的事件 | 发布的事件 | 调用的API |
+|---|---|---|---|---|
+| M1 输入检索 | — | — | `ENTITY_SELECTED` | `/api/entity/search` |
+| M2 视角切换 | `currentEntityId` | `ENTITY_SELECTED` | `PERSPECTIVE_CHANGED` | — |
+| M3 证据链 | `currentEntityId`, `currentPerspective` | `ANALYSIS_COMPLETED`, `EVIDENCE_FOCUS_REQUESTED` | `EVIDENCE_SELECTED` | `/api/analysis/{id}/evidence` |
+| M4 评分风险 | `currentEntityId`, `currentPerspective` | `ANALYSIS_COMPLETED` | — | `/api/analysis/{id}/scores` |
+| M5 关系图谱 | `currentEntityId` | `ENTITY_SELECTED` | — | `/api/graph/{id}` |
+| M6 报告导出 | `currentEntityId`, `currentPerspective` | `EVIDENCE_SELECTED` | `EXPORT_REQUESTED` | `/api/report/export` |
+| M7 估值工作台 | `currentPerspective` | `PERSPECTIVE_CHANGED` | — | `/api/valuation/calculate` |
+| M8 薪酬文化 | `currentPerspective` | `PERSPECTIVE_CHANGED` | — | `/api/culture/{id}` |
+| M9 合规交付 | `currentPerspective` | `PERSPECTIVE_CHANGED` | — | `/api/compliance/{id}` |
+| M10 AI Copilot | `currentEntityId`, `currentPerspective` | `ANALYSIS_COMPLETED` | `EVIDENCE_FOCUS_REQUESTED`, `INTERRUPT_REQUESTED` | `/api/ai/chat` |
+| M11 作战室 | `activeAnalysisRunId`, `activeAgents` | `AGENT_EVENT`, `ANALYSIS_STARTED` | `INTERRUPT_REQUESTED` | `/api/ai/analyze/{runId}/events` |
+| M12 流式报告 | `currentEntityId` | `ANALYSIS_COMPLETED` | — | `/api/ai/report/{id}/stream` |
+
+### 7.4 典型数据流
+
+**场景：用户选择企业→切换投资视角→启动深度分析→查看证据→追问→导出报告**
+
+```
+1. 用户在M1输入企业名并选中
+   → M1调用 GET /api/entity/search
+   → 选中后发布 ENTITY_SELECTED
+   → Shell更新Shared State: currentEntityId = "xxx"
+
+2. M5订阅到ENTITY_SELECTED，自动发起图谱查询
+   → GET /api/graph/xxx?depth=5
+
+3. 用户在M2点击"投资视角"
+   → M2更新Shared State: currentPerspective = 'invest'
+   → 发布 PERSPECTIVE_CHANGED
+
+4. Shell收到PERSPECTIVE_CHANGED，通知AI Gateway启动分析
+   → POST /api/ai/analyze { entityId, perspective, depth: "standard" }
+   → 返回 runId
+
+5. AI Gateway编排LangGraph工作流：
+   规划Agent → 并行专家检索 → Bull/Bear辩论 → Verifier验证 → Synthesizer合成
+   每个Agent的状态变化通过AG-UI事件流推送
+   → M11订阅 /api/ai/analyze/{runId}/events (SSE)
+   → 实时更新作战室UI
+
+6. 分析完成后，AI Gateway推送 ANALYSIS_COMPLETED
+   → M3渲染证据卡片列表（含证据类型标签和来源链接）
+   → M4渲染评分雷达图和风险灯
+   → M12开始流式接收报告章节
+
+7. 用户在M10 Copilot中追问："供应商集中度具体是多少？"
+   → POST /api/ai/chat { message, context: { entityId, runId } }
+   → AI Gateway在已有分析上下文中检索并回答
+   → 回答中引用证据链中的具体证据
+
+8. 用户在M10中说："帮我在辩论中质疑这个营收数据"
+   → POST /api/ai/analyze/{runId}/interrupt { instruction }
+   → LangGraph interrupt恢复辩论流程，注入用户指令
+
+9. 用户在M6点击"导出PDF"
+   → POST /api/report/export { entityId, format: "pdf", perspective }
+   → BFF触发后端报告生成（模板渲染 → PDF）
+   → 返回下载链接
+```
+
+### 7.5 连接设计的关键约束
+
+**约束一：模块不直接互相import**。所有跨模块交互必须经过Shell暴露的Event Bus或Shared Store，避免重新引入耦合。
+
+**约束二：远程模块通过Manifest注册**。每个微前端在构建时生成`mf-manifest.json`，Shell的Route Orchestrator根据路由动态加载对应远程入口。
+
+**约束三：长任务与API解耦**。分析流水线（如股权穿透、多Agent分析）通过消息队列异步执行，前端通过SSE或轮询获取进度，避免阻塞API响应。
+
+**约束四：共享依赖版本协商**。Module Federation的shared配置管理React、状态库、设计系统等公共依赖，防止重复加载和版本冲突。
+
+**约束五：AI层故障隔离**。AI Gateway的故障不应导致整个交互端不可用。当AI层不可用时，前端自动降级到规则引擎模式，隐藏AI相关模块（M10/M11/M12），保留核心评估功能。
+
+
+## 八、数据接入层设计
+
+### 8.1 企业数据源适配器
+
+适配器负责将不同数据源的API响应统一为标准化的证据格式。中国企业数据源方面，可对接以下MCP服务：
+
+- **企查查MCP**：179个原子能力，覆盖工商、司法、知产、经营、董监高
+- **启信慧眼**：200+数据接口，覆盖工商、司法风险、知识产权、经营数据
+- **工商云MCP**：30+工具，覆盖工商注册、股东治理、经营动态、司法涉诉、税务风险、环保处罚、供应链上下游
+
+### 8.2 证据持久化与审计日志
+
+所有证据和审计日志需要持久化存储。参考TRACE框架的密码学验证取证重建方法，以及NovaFabric的防篡改可重放证据设计。
+
+审计日志需要记录的关键要素包括：输入数据版本、模型版本、提示词版本、工具调用记录、人工干预记录、Agent决策推理链。这些记录是满足合规要求的基础——在投研报告、招股披露、尽调报告等场景中，组织必须保留并能提供发现所依据的底层源材料。
+
+
+## 九、降级与容错策略
+
+| 故障场景 | 降级策略 |
+|---|---|
+| LLM API不可用 | 回退到规则引擎评分 + 已缓存的历史分析结果 |
+| 辩论Agent超时 | 跳过辩论阶段，直接由Verifier标记“未经过对抗验证” |
+| RAG检索为空 | 触发Web搜索补充；若仍为空，标记该维度为“数据缺失” |
+| MCP工具调用失败 | 工具级别优雅降级，标注“该数据源暂不可用”，不影响其他工具结果 |
+| 整体置信度低于阈值 | 阻塞门触发，不输出结论性评分，仅提供证据摘要和建议核验方向 |
+| AI Gateway整体不可用 | 前端隐藏AI模块，保留规则引擎模式的核心评估功能 |
+| SSE连接中断 | 通过runId重连，基于Background/Resumable SSE模式续传 |
+
+
+## 十、技术实现建议
+
+- **前端框架**：Next.js 14（App Router + Server Components）或Vue 3 + TypeScript
+- **状态管理**：Zustand（React生态）或Pinia（Vue生态）
+- **事件总线**：@palinc/nirnam（SharedWorker + BroadcastChannel，零依赖，支持Pub/Sub/Request-Reply/Streaming）
+- **AI前端集成**：CopilotKit（React聊天运行时 + AG-UI客户端 + 生成式UI + 共享状态同步）
+- **可视化**：ECharts（关系图谱、财务趋势、风险矩阵）
+- **组件架构**：Module Federation微前端 + Feature-Sliced Design分层
+- **实时通信**：SSE（流式输出）+ WebSocket（双向交互）
+- **AI编排**：LangGraph（非线性工作流 + human-in-the-loop interrupt + checkpoint持久化）
+- **RAG评估**：Ragas（Faithfulness、Answer Relevancy、Context Precision/Recall）
+- **MCP工具**：标准化Agent工具调用，接入企查查、启信慧眼等企业数据服务
+
+
+## 十一、实施路径与优先级
+
+| 阶段 | 模块 | 依赖 | 交付标准 |
+|---|---|---|---|
+| **P0** | Shell + Auth + Event Bus + Shared Store | 无 | 微前端框架可运行，跨模块通信正常 |
+| **P0** | M1输入检索 + M2视角切换 + M5关系图谱 | Shell | 用户可搜索企业、切换视角、查看图谱 |
+| **P0** | AI Gateway + SSE事件流 | 无 | 前端可订阅Agent生命周期事件 |
+| **P0** | 规划Agent + 检索Agent + 验证Agent | MCP工具服务 | 输入企业名→输出结构化证据集 |
+| **P0** | M3证据链查看器 + M4评分风险面板 | AI Gateway | 评估结论带证据和置信度标签 |
+| **P1** | 财务分析Agent + 合规Agent | 检索Agent | 两个专业维度的深度分析 |
+| **P1** | M10 AI Copilot + 对话追问 | AI Gateway + CopilotKit | 用户可用自然语言追问和操作 |
+| **P1** | M12流式报告生成 | 合成Agent + Vercel AI SDK | 报告增量渲染 |
+| **P1** | M6报告导出（PDF/HTML/Markdown） | 报告合成 | 多格式导出可用 |
+| **P2** | 对抗辩论（Bull/Bear） + M11作战室 | 财务+合规Agent | 辩论时间线可视化和用户可干预 |
+| **P2** | LLM-Ops评估闭环 | 全部分析运行 | 自动评分 + 提示词版本管理 |
+| **P2** | M7估值工作台 + M8薪酬文化 + M9合规交付 | 视角适配器 | 各场景专属模块可用 |
+| **P2** | 自定义权重配置 + 评估历史对比 | 评分引擎 | 提升专业用户粘性 |
+
+建议从P0阶段的**Shell + AI Gateway + 检索Agent + 验证Agent + 证据链查看器**构成的最小闭环开始，验证“输入企业→Agent检索→证据验证→结构化输出→证据链展示”这条核心链路，再逐步叠加专业分析Agent、前端交互模块和各场景专属模块。
+
+
+## 十二、风险与应对
+
+**风险一：AI幻觉导致评估结论不可靠。** 应对：强制证据挂载机制，Verifier Agent交叉验证，grounding guardrail拒绝未经检索证据支撑的结论。Atlas的grounding guardrail机制可以拒绝任何未被检索证据支撑的声明，确保报告不会无声地产生幻觉。
+
+**风险二：企业数据源可用性波动。** 应对：多数据源冗余配置，工具级别优雅降级，缓存策略降低对实时API的依赖。
+
+**风险三：长时分析任务超时。** 应对：Background/Resumable SSE模式支持断线续传，LangGraph checkpoint机制支持崩溃后恢复。
+
+**风险四：合规审计要求升级。** 应对：从架构层面内建审计日志和证据链留痕，而非事后补充。所有AI参与的分析过程记录完整的输入数据版本、模型版本、提示词版本和人工干预记录。
+
+**风险五：多Agent系统成本失控。** 应对：分级评估深度（快速扫描使用单Agent，深度尽调使用全Agent编排），缓存复用历史分析结果，记忆系统减少重复检索。

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+ <meta http-equiv="Content-Security-Policy"
+content="default-src 'self';
+script-src 'self';
+connect-src 'self' https://api.deepseek.com https://api.openai.com https://dashscope.aliyun.com;
+style-src 'self' 'unsafe-inline';
+img-src 'self' data:;">
+  <title>企评小宝 · 企业智能评估助手</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- ===== App Shell · 应用壳（顶栏 + 导航） ===== -->
+  <header class="app-header">
+    <div class="header-inner shell">
+      <div class="brand">
+        <span class="brand-logo">企</span>
+        <div class="brand-text">
+          <h1>企评小宝 <span class="badge">企业智能评估工作台</span></h1>
+          <p class="subtitle">证据优先 · 多视角适配 · 可审计 —— 复刻自「中金资本智能投决 · 多维数智企评平台」</p>
+        </div>
+      </div>
+      <nav class="app-nav" aria-label="主导航">
+        <a href="#step-input" id="btn-home-top" title="回到首页：重新选择视角 / 更换企业">🏠 首页</a>
+        <a href="#viz-methods">方法论</a>
+        <a href="#step-input">开始评估</a>
+        <a href="#step-result">报告</a>
+        <a href="#step-history">历史</a>
+      </nav>
+      <div class="top-search">
+        <input type="text" id="top-search-input" placeholder="搜索企业名称 / 示例企业，回车检索…" autocomplete="off">
+        <button id="top-search-btn" class="top-search-btn" title="检索并开始评估">检索</button>
+      </div>
+      <span class="offline-badge" title="本地离线运行，数据不出本机">◉ 离线可用</span>
+      <button id="btn-ai-settings" class="ai-top-btn" title="配置 AI 接口（密钥仅保存在本机）">▲ AI 设置</button>
+      <button id="btn-settings" class="settings-top-btn" title="设置：风格 / 历史记录 / AI 密钥">⚙ 设置</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 三步流程 Stepper -->
+    <div id="step-progress" class="stepper" aria-label="评估进度">
+      <div class="step-item active" data-step="1"><span class="step-dot">1</span><b>选择视角</b><i>输入企业</i></div>
+      <div class="step-line"></div>
+      <div class="step-item" data-step="2"><span class="step-dot">2</span><b>录入数据</b><i>公开 / 补充</i></div>
+      <div class="step-line"></div>
+      <div class="step-item" data-step="3"><span class="step-dot">3</span><b>查看报告</b><i>评分与依据</i></div>
+    </div>
+
+    <!-- 第一步：多视角对话框式输入 -->
+    <section id="step-input" class="card">
+      <h2><span class="step-no">1</span> 选择评估视角（四选一，互斥）</h2>
+      <p class="tip section-desc">同一套企业数据，按你的身份切换评估视角 —— 评分权重与关注重点随之改变。请从下方四张视角卡片中互斥选择其一（投资 / 尽调 / 求职 / 合作），再输入企业名称开始评估。</p>
+      <div id="perspective-grid" class="persp-grid"></div>
+      <div class="chat-row">
+        <input type="text" id="company-name" placeholder="请输入企业名称，例如：北京某某科技有限公司" autocomplete="off">
+        <button id="btn-start" class="primary">开始评估</button>
+      </div>
+      <div id="chat-feedback" class="chat-feedback hidden"></div>
+    </section>
+
+    <!-- 第二步：数据录入 -->
+    <section id="step-data" class="card hidden">
+      <h2><span class="step-no">2</span> 录入企业数据</h2>
+      <div class="data-toolbar">
+        <div class="data-tabs">
+          <button class="tab-btn active" data-tab="tab-public">① 公开数据 · 示例企业</button>
+          <button class="tab-btn" data-tab="tab-manual">② 用户补充填报</button>
+        </div>
+        <button id="btn-weights" class="ghost" title="按你的判断调整 7 大维度权重（设计方案 5.2 自定义权重）">⚙ 权重配置</button>
+      </div>
+
+      <div id="tab-public" class="tab-panel">
+        <p class="tip">选择预置示例企业可自动填充公开数据（已做脱敏/模拟），也可直接修改为你的目标企业数据。</p>
+        <div class="sample-row">
+          <select id="sample-select" aria-label="预置示例企业">
+            <option value="">选择预置示例企业…</option>
+          </select>
+        </div>
+        <div id="sample-fields" class="fields-grid"></div>
+      </div>
+
+      <div id="tab-manual" class="tab-panel hidden">
+        <p class="tip">补充填写你对企业的了解。已知项越全，评分越准；未填写的指标将按缺失值自动降权处理（标记为 Missing 证据，报告中给出核验建议）。</p>
+        <div id="manual-form" class="fields-grid"></div>
+      </div>
+
+      <div class="action-row">
+        <button id="btn-home-from-data" class="ghost" title="返回第一步重新选择视角或更换企业">← 回到首页</button>
+        <button id="btn-score" class="primary">生成评估报告</button>
+        <span id="score-hint" class="hint"></span>
+      </div>
+    </section>
+
+    <!-- 第三步：结果 -->
+    <section id="step-result" class="card hidden">
+      <h2><span class="step-no">3</span> 评估结果</h2>
+      <div class="result-top">
+        <div class="score-box">
+          <div id="total-score">--</div>
+          <div class="score-label">综合评分</div>
+          <div id="score-grade" class="grade"></div>
+          <div id="score-meta" class="score-meta"></div>
+        </div>
+        <div id="radar-chart" class="radar-box"></div>
+      </div>
+      <div id="report-box"></div>
+      <!-- AI 智能解读（设计方案原则三：AI 增强而非替代，未配置/离线时自动降级） -->
+      <div id="ai-panel" class="ai-panel"></div>
+      <div id="ai-search-panel" class="ai-panel"></div>
+      <div class="action-row">
+        <button id="btn-home-from-result" class="ghost" title="返回第一步重新选择视角或更换企业">← 回到首页</button>
+        <button id="btn-compare" class="secondary">与历史评估对比</button>
+      </div>
+    </section>
+
+    <!-- 历史对比 -->
+    <section id="step-history" class="card hidden">
+      <h2>历史评估对比</h2>
+      <div class="action-row">
+        <button id="btn-home-from-history" class="ghost" title="返回第一步重新选择视角或更换企业">← 回到首页</button>
+        <button id="btn-close-history" class="ghost" title="收起历史对比">收起对比</button>
+      </div>
+      <div id="history-list"></div>
+      <div id="compare-chart"></div>
+    </section>
+
+    <!-- 评估方法与流程可视化 -->
+    <section id="viz-methods" class="card">
+      <h2><span class="step-no">★</span> 评估方法与流程 · 可视化</h2>
+      <p class="tip">一张图看懂企评小宝的评分逻辑：指标体系 → 标准化评分 → 三层加权 → 场景权重 → 缺失降权，最终生成可解释报告。（数据实时取自 indicators.js / engine.js）</p>
+      <div class="viz-tabs">
+        <button class="viz-tab active" data-viz="flow">① 评估流程</button>
+        <button class="viz-tab" data-viz="tree">② 指标体系</button>
+        <button class="viz-tab" data-viz="formula">③ 标准化公式</button>
+        <button class="viz-tab" data-viz="layers">④ 三层加权</button>
+        <button class="viz-tab" data-viz="weights">⑤ 场景权重</button>
+        <button class="viz-tab" data-viz="missing">⑥ 缺失降权</button>
+      </div>
+      <div class="viz-panel" id="viz-flow"></div>
+      <div class="viz-panel hidden" id="viz-tree"></div>
+      <div class="viz-panel hidden" id="viz-formula"></div>
+      <div class="viz-panel hidden" id="viz-layers"></div>
+      <div class="viz-panel hidden" id="viz-weights"></div>
+      <div class="viz-panel hidden" id="viz-missing"></div>
+    </section>
+  </main>
+
+  <footer>
+    企评小宝 · iCAN 2026 AI 无代码智能体挑战赛 · 中金资本智能投决平台复刻改进版
+  </footer>
+
+  <!-- 设置面板弹窗：界面风格 / 评估历史记录 / AI 智能解读设置 -->
+  <div id="settings-overlay" class="cw-overlay hidden">
+    <div class="cw-box settings-box">
+      <h3>设置</h3>
+      <div class="settings-sec">
+        <h4>① 界面风格</h4>
+        <select id="theme-select">
+          <option value="light">专业蓝（默认）</option>
+          <option value="dark">深色夜间</option>
+          <option value="green">森林绿</option>
+          <option value="orange">暖阳橙</option>
+        </select>
+        <p class="cw-tip">风格保存在本机，下次启动自动应用。</p>
+      </div>
+      <div class="settings-sec">
+        <h4>② 评估历史记录</h4>
+        <div id="settings-history" class="settings-history"></div>
+        <button id="btn-clear-history" class="ghost" title="清空全部历史记录">清空历史记录</button>
+      </div>
+      <div class="settings-sec">
+        <h4>③ AI 智能解读设置</h4>
+        <p class="cw-tip">OpenAI 兼容接口（DeepSeek / OpenAI / 通义等）。密钥仅保存在本机，不写入代码或上传；未配置时评估功能不受影响。</p>
+        <label class="ai-field"><span>接口地址（Base URL）</span>
+          <input type="text" id="s-ai-base-url" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+        </label>
+        <label class="ai-field"><span>API 密钥（API Key）</span>
+          <input type="password" id="s-ai-api-key" placeholder="sk-…" autocomplete="off">
+        </label>
+        <label class="ai-field"><span>模型名称（Model）</span>
+          <input type="text" id="s-ai-model" placeholder="deepseek-chat" autocomplete="off">
+        </label>
+        <div id="s-ai-test-result" class="ai-test-result hidden"></div>
+        <div class="settings-ai-actions">
+          <button id="s-ai-test" class="ghost">测试连接</button>
+          <button id="s-ai-clear" class="ghost">清除密钥</button>
+          <button id="s-ai-save" class="primary">保存配置</button>
+        </div>
+        <label class="settings-check-row">
+          <input type="checkbox" id="s-ai-autosearch">
+          <span>评分完成后自动让 AI 检索并分析各项参数（可选，默认关闭；未配置密钥时不生效）</span>
+        </label>
+      </div>
+      <div class="cw-actions">
+        <button id="settings-close" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 自定义权重弹窗（设计方案 5.2：视角适配器支持用户自定义权重） -->
+  <div id="cw-overlay" class="cw-overlay hidden">
+    <div class="cw-box">
+      <h3>自定义维度权重</h3>
+      <p class="cw-tip">按你的判断调整 7 大维度权重（保存时自动归一化，合计 = 1），仅影响本次后续评分；「恢复默认」回到当前视角配置。</p>
+      <div id="cw-list" class="cw-list"></div>
+      <div class="cw-actions">
+        <button id="cw-reset" class="ghost">恢复场景默认</button>
+        <button id="cw-cancel" class="ghost">取消</button>
+        <button id="cw-apply" class="primary">应用权重</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI 接口设置弹窗（设计方案：密钥由用户提供并仅保存在本机） -->
+  <div id="ai-overlay" class="cw-overlay hidden">
+    <div class="cw-box ai-box">
+      <h3>AI 智能解读设置</h3>
+      <p class="cw-tip">填写 OpenAI 兼容接口（如 DeepSeek / OpenAI / 通义等）的密钥。密钥仅保存在本机浏览器存储，不会写入代码或上传；未配置时评估功能不受影响，仅不生成 AI 解读。</p>
+      <div class="ai-form">
+        <label class="ai-field"><span>接口地址（Base URL）</span>
+          <input type="text" id="ai-base-url" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+        </label>
+        <label class="ai-field"><span>API 密钥（API Key）</span>
+          <input type="password" id="ai-api-key" placeholder="sk-…" autocomplete="off">
+        </label>
+        <label class="ai-field"><span>模型名称（Model）</span>
+          <input type="text" id="ai-model" placeholder="deepseek-chat" autocomplete="off">
+        </label>
+      </div>
+      <div id="ai-test-result" class="ai-test-result hidden"></div>
+      <div class="cw-actions ai-actions">
+        <button id="ai-btn-test" class="ghost">测试连接</button>
+        <button id="ai-btn-clear" class="ghost">清除密钥</button>
+        <button id="ai-btn-cancel" class="ghost">取消</button>
+        <button id="ai-btn-save" class="primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/indicators.js"></script>
+  <script src="js/evidence.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/samples.js"></script>
+  <script src="js/radar.js"></script>
+  <script src="js/report.js"></script>
+  <script src="js/history.js"></script>
+  <script src="js/visualize.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
